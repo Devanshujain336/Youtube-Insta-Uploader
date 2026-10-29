@@ -1,0 +1,45 @@
+name: YouTube to Instagram Auto-Reposter
+
+on:
+  schedule:
+    # Checks your YouTube channel every 2 hours
+    - cron: '15 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write  # Allows GitHub to save posted_videos.txt after each upload!
+
+jobs:
+  sync-youtube-to-instagram:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 🎬 Install FFmpeg & yt-dlp
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          pip install -U yt-dlp requests
+
+      - name: 🚀 Check YouTube & Post to Instagram
+        env:
+          YOUTUBE_CHANNEL_URL: "https://www.youtube.com/@billionairemonkk/shorts"
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: python yt_to_insta.py
+
+      - name: 💾 Save Posted Video ID to Memory (posted_videos.txt)
+        run: |
+          if [ -f posted_videos.txt ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add posted_videos.txt
+            git diff --staged --quiet || git commit -m "chore: mark YouTube video as posted to Instagram"
+            git push
+          fi
