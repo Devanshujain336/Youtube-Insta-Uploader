@@ -35,7 +35,7 @@ jobs:
 
       - name: 🚀 Check YouTube & Post to Instagram
         env:
-          YOUTUBE_CHANNEL_URL: "https://www.youtube.com/@billionairemonkk/shorts"
+          YOUTUBE_CHANNEL_URL: "https://www.youtube.com/@MathonGoCoupons/shorts"
           YT_COOKIES: ${{ secrets.YT_COOKIES }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
