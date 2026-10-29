@@ -1,6 +1,6 @@
 import os
 import time
-import subprocess
+import xml.etree.ElementTree as ET
 import requests
 import yt_dlp
 
@@ -8,13 +8,20 @@ import yt_dlp
 # 1. CONFIGURATION
 # ==========================================
 YOUTUBE_CHANNEL_URL = os.environ.get("YOUTUBE_CHANNEL_URL", "https://www.youtube.com/@MathonGoCoupons/shorts")
+YT_COOKIES = os.environ.get("YT_COOKIES", "").strip()
 IG_USER_ID = "".join(os.environ.get("IG_USER_ID", "").replace("IG_USER_ID:", "").split())
 IG_ACCESS_TOKEN = "".join(os.environ.get("IG_ACCESS_TOKEN", "").replace("IG_ACCESS_TOKEN:", "").split())
 
 HISTORY_FILE = "posted_videos.txt"
+COOKIES_FILE = "cookies.txt"
+
+if YT_COOKIES:
+    with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+        f.write(YT_COOKIES + "\n")
+    print("🍪 Loaded YT_COOKIES for authenticated YouTube download!")
 
 # ==========================================
-# 2. CHECK FOR NEW YOUTUBE VIDEO & DOWNLOAD
+# 2. FETCH EXACT TITLE & DESCRIPTION VIA OFFICIAL YOUTUBE XML FEED
 # ==========================================
 def get_posted_history():
     if not os.path.exists(HISTORY_FILE):
@@ -26,22 +33,90 @@ def save_to_history(video_id):
     with open(HISTORY_FILE, "a", encoding="utf-8") as f:
         f.write(f"{video_id}\n")
 
-def get_oembed_title(video_url):
-    """Fetches video title via YouTube oEmbed API (never blocked by bot checks)"""
+def fetch_metadata_from_xml_feed(channel_id, video_id):
+    """Fetches exact Title & Full Description from YouTube's official XML feed (Never blocked!)"""
+    if not channel_id:
+        return "", ""
     try:
-        r = requests.get(f"https://www.youtube.com/oembed?url={video_url}&format=json", timeout=10).json()
-        return r.get("title", "")
-    except Exception:
-        return ""
+        url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            root = ET.fromstring(r.text)
+            ns = {
+                "atom": "http://www.w3.org/2005/Atom",
+                "yt": "http://www.youtube.com/xml/schemas/2015",
+                "media": "http://search.yahoo.com/mrss/"
+            }
+            for entry in root.findall("atom:entry", ns):
+                vid_elem = entry.find("yt:videoId", ns)
+                if vid_elem is not None and vid_elem.text == video_id:
+                    title_elem = entry.find("atom:title", ns)
+                    desc_elem = entry.find("media:group/media:description", ns)
+                    return (
+                        title_elem.text if title_elem is not None else "",
+                        desc_elem.text if desc_elem is not None else ""
+                    )
+    except Exception as e:
+        print(f"   ⚠️ XML Feed lookup note: {e}")
+    return "", ""
 
-def download_with_multi_bypass(video_url, output_mp4):
-    """Rotates across PO-Token clients + pytubefix to bypass datacenter bot checks"""
+# ==========================================
+# 3. MULTI-LAYER VIDEO DOWNLOADER (DENO + COOKIES + PROXY MIRRORS)
+# ==========================================
+def download_via_proxy_mirrors(video_id, output_mp4):
+    """Fallback: Downloads MP4 via external Invidious/Piped proxy servers outside GitHub Actions IP"""
+    print("   🌐 Trying External Proxy Mirrors (Invidious / Piped APIs)...")
+    
+    # 1. Try Piped API Mirrors
+    piped_hosts = [
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.tokhmi.xyz",
+        "https://pipedapi.drgns.space"
+    ]
+    for host in piped_hosts:
+        try:
+            r = requests.get(f"{host}/streams/{video_id}", timeout=20).json()
+            streams = [s for s in r.get("videoStreams", []) if not s.get("videoOnly", True) and s.get("format") == "MPEG_4"]
+            if streams:
+                dl_url = streams[0]["url"]
+                vid_bytes = requests.get(dl_url, timeout=45).content
+                if len(vid_bytes) > 20000:
+                    with open(output_mp4, "wb") as f:
+                        f.write(vid_bytes)
+                    return r.get("title", ""), r.get("description", "")
+        except Exception as e:
+            print(f"   ⚠️ Piped mirror ({host}) skipped: {e}")
+
+    # 2. Try Invidious API Mirrors
+    inv_hosts = [
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://yt.chocolatemoo53.com"
+    ]
+    for host in inv_hosts:
+        try:
+            r = requests.get(f"{host}/api/v1/videos/{video_id}", timeout=20).json()
+            fmt_streams = r.get("formatStreams", [])
+            if fmt_streams:
+                dl_url = fmt_streams[-1]["url"]
+                if dl_url.startswith("/"):
+                    dl_url = host + dl_url
+                vid_bytes = requests.get(dl_url, timeout=45).content
+                if len(vid_bytes) > 20000:
+                    with open(output_mp4, "wb") as f:
+                        f.write(vid_bytes)
+                    return r.get("title", ""), r.get("description", "")
+        except Exception as e:
+            print(f"   ⚠️ Invidious mirror ({host}) skipped: {e}")
+
+    return None, None
+
+def download_with_multi_bypass(video_url, video_id, output_mp4):
     client_strategies = [
-        None,  # Uses default web/tv client with bgutil PO Token plugin on port 4416
-        ["tv_downgraded", "web_embedded", "mweb"],
-        ["mweb", "tv_downgraded"],
-        ["android_vr", "tv_downgraded"],
-        ["web_creator", "web_embedded"]
+        None,  # Uses Deno + PO-Token + Cookies (if provided)
+        ["tv", "web_safari"],
+        ["mweb", "web_embedded"],
+        ["web_creator"]
     ]
 
     for idx, clients in enumerate(client_strategies):
@@ -55,11 +130,13 @@ def download_with_multi_bypass(video_url, output_mp4):
             "quiet": False,
             "nocheckcertificate": True,
         }
+        if os.path.exists(COOKIES_FILE):
+            dl_opts["cookiefile"] = COOKIES_FILE
         if clients:
             dl_opts["extractor_args"] = {"youtube": {"player_client": clients}}
 
         try:
-            print(f"   🔓 Download Attempt {idx+1} (Clients: {clients or 'PO-Token Default'})...")
+            print(f"   🔓 Download Attempt {idx+1} (Clients: {clients or 'Deno + Cookies/POT'})...")
             with yt_dlp.YoutubeDL(dl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
                 if os.path.exists(output_mp4) and os.path.getsize(output_mp4) > 10000:
@@ -67,32 +144,25 @@ def download_with_multi_bypass(video_url, output_mp4):
         except Exception as e:
             print(f"   ⚠️ Strategy {idx+1} blocked: {e}")
 
-    # Fallback to pytubefix if all yt-dlp clients fail
-    print("   🔄 Trying pytubefix fallback...")
-    from pytubefix import YouTube
-    for pt_client in ["WEB", "MWEB", "ANDROID_VR", "TV"]:
-        try:
-            yt = YouTube(video_url, client=pt_client)
-            stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
-            if not stream:
-                stream = yt.streams.filter(file_extension="mp4").first()
-            if stream:
-                stream.download(filename=output_mp4)
-                if os.path.exists(output_mp4) and os.path.getsize(output_mp4) > 10000:
-                    return yt.title or "", yt.description or ""
-        except Exception as e:
-            print(f"   ⚠️ pytubefix ({pt_client}) failed: {e}")
+    # Try external proxy mirrors if GitHub IP is blocked
+    p_title, p_desc = download_via_proxy_mirrors(video_id, output_mp4)
+    if os.path.exists(output_mp4) and os.path.getsize(output_mp4) > 10000:
+        return p_title or "", p_desc or ""
 
-    raise RuntimeError("❌ All YouTube download bypass strategies failed.")
+    raise RuntimeError("❌ Download blocked by YouTube IP check. Please add YT_COOKIES to GitHub Secrets (takes 30 seconds)!")
 
 def fetch_latest_youtube_video():
     print(f"🔍 Checking YouTube channel for new uploads: {YOUTUBE_CHANNEL_URL}")
     posted_ids = get_posted_history()
 
     flat_opts = {"extract_flat": True, "playlistend": 3, "quiet": True}
+    if os.path.exists(COOKIES_FILE):
+        flat_opts["cookiefile"] = COOKIES_FILE
+
     with yt_dlp.YoutubeDL(flat_opts) as ydl:
         info = ydl.extract_info(YOUTUBE_CHANNEL_URL, download=False)
         entries = info.get("entries", [])
+        channel_id = info.get("channel_id", "")
 
     if not entries:
         print("ℹ️ No videos found on this channel tab.")
@@ -109,11 +179,14 @@ def fetch_latest_youtube_video():
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     print(f"🆕 NEW YOUTUBE VIDEO DETECTED! ID: {video_id}")
 
-    output_mp4 = "latest_yt_short.mp4"
-    dl_title, dl_desc = download_with_multi_bypass(video_url, output_mp4)
+    # Fetch guaranteed Title & Full Description from official XML feed
+    xml_title, xml_desc = fetch_metadata_from_xml_feed(channel_id, video_id)
 
-    final_title = dl_title or playlist_title or get_oembed_title(video_url) or "New Short #shorts"
-    final_desc = dl_desc or final_title
+    output_mp4 = "latest_yt_short.mp4"
+    dl_title, dl_desc = download_with_multi_bypass(video_url, video_id, output_mp4)
+
+    final_title = dl_title or xml_title or playlist_title or "New Short #shorts"
+    final_desc = dl_desc or xml_desc or final_title
 
     print(f"✅ Downloaded Successfully: '{final_title}'")
     return {
@@ -124,7 +197,7 @@ def fetch_latest_youtube_video():
     }
 
 # ==========================================
-# 3. STAGE VIDEO & UPLOAD TO INSTAGRAM REELS
+# 4. STAGE VIDEO & UPLOAD TO INSTAGRAM REELS
 # ==========================================
 def get_temp_public_video_url(video_path):
     try:
