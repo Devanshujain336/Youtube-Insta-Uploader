@@ -1,5 +1,6 @@
 import os
 import time
+import subprocess
 import xml.etree.ElementTree as ET
 import requests
 import yt_dlp
@@ -34,7 +35,6 @@ def save_to_history(video_id):
         f.write(f"{video_id}\n")
 
 def fetch_metadata_from_xml_feed(channel_id, video_id):
-    """Fetches exact Title & Full Description from YouTube's official XML feed (Never blocked!)"""
     if not channel_id:
         return "", ""
     try:
@@ -61,72 +61,40 @@ def fetch_metadata_from_xml_feed(channel_id, video_id):
     return "", ""
 
 # ==========================================
-# 3. MULTI-LAYER VIDEO DOWNLOADER (DENO + COOKIES + PROXY MIRRORS)
+# 3. DOWNLOAD YOUTUBE SHORT & CONVERT TO STRICT IG REELS H.264 SPEC
 # ==========================================
-def download_via_proxy_mirrors(video_id, output_mp4):
-    """Fallback: Downloads MP4 via external Invidious/Piped proxy servers outside GitHub Actions IP"""
-    print("   🌐 Trying External Proxy Mirrors (Invidious / Piped APIs)...")
-    
-    # 1. Try Piped API Mirrors
-    piped_hosts = [
-        "https://pipedapi.kavin.rocks",
-        "https://pipedapi.tokhmi.xyz",
-        "https://pipedapi.drgns.space"
+def normalize_for_instagram_reels(raw_mp4, ig_ready_mp4="ig_ready_reel.mp4"):
+    """Converts video to strict Instagram Reels H.264 (avc1) + AAC + faststart spec to prevent Error 2207082"""
+    print("   🎬 Converting video to strict Instagram Reels H.264 (avc1) format...")
+    cmd = [
+        "ffmpeg", "-y", "-i", raw_mp4,
+        "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
+        "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
+        "-pix_fmt", "yuv420p", "-b:v", "5000k", "-maxrate", "6000k", "-bufsize", "10000k",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart",
+        ig_ready_mp4
     ]
-    for host in piped_hosts:
-        try:
-            r = requests.get(f"{host}/streams/{video_id}", timeout=20).json()
-            streams = [s for s in r.get("videoStreams", []) if not s.get("videoOnly", True) and s.get("format") == "MPEG_4"]
-            if streams:
-                dl_url = streams[0]["url"]
-                vid_bytes = requests.get(dl_url, timeout=45).content
-                if len(vid_bytes) > 20000:
-                    with open(output_mp4, "wb") as f:
-                        f.write(vid_bytes)
-                    return r.get("title", ""), r.get("description", "")
-        except Exception as e:
-            print(f"   ⚠️ Piped mirror ({host}) skipped: {e}")
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    print(f"   ✅ Instagram-compliant H.264 MP4 ready ({os.path.getsize(ig_ready_mp4) // 1024} KB)")
+    return ig_ready_mp4
 
-    # 2. Try Invidious API Mirrors
-    inv_hosts = [
-        "https://inv.nadeko.net",
-        "https://invidious.nerdvpn.de",
-        "https://yt.chocolatemoo53.com"
-    ]
-    for host in inv_hosts:
-        try:
-            r = requests.get(f"{host}/api/v1/videos/{video_id}", timeout=20).json()
-            fmt_streams = r.get("formatStreams", [])
-            if fmt_streams:
-                dl_url = fmt_streams[-1]["url"]
-                if dl_url.startswith("/"):
-                    dl_url = host + dl_url
-                vid_bytes = requests.get(dl_url, timeout=45).content
-                if len(vid_bytes) > 20000:
-                    with open(output_mp4, "wb") as f:
-                        f.write(vid_bytes)
-                    return r.get("title", ""), r.get("description", "")
-        except Exception as e:
-            print(f"   ⚠️ Invidious mirror ({host}) skipped: {e}")
-
-    return None, None
-
-def download_with_multi_bypass(video_url, video_id, output_mp4):
+def download_with_multi_bypass(video_url, video_id, raw_mp4):
     client_strategies = [
-        None,  # Uses Deno + PO-Token + Cookies (if provided)
+        None,  # Uses Deno + PO-Token + Cookies
         ["tv", "web_safari"],
         ["mweb", "web_embedded"],
-        ["web_creator"]
     ]
 
     for idx, clients in enumerate(client_strategies):
-        if os.path.exists(output_mp4):
-            os.remove(output_mp4)
+        if os.path.exists(raw_mp4):
+            os.remove(raw_mp4)
 
         dl_opts = {
-            "format": "bestvideo[ext=mp4][height<=1920]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            # Prefer H.264 (avc1) directly instead of AV1 (format 399)
+            "format": "bestvideo[vcodec^=avc1][height<=1920]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1920]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "merge_output_format": "mp4",
-            "outtmpl": output_mp4,
+            "outtmpl": raw_mp4,
             "quiet": False,
             "nocheckcertificate": True,
         }
@@ -139,17 +107,12 @@ def download_with_multi_bypass(video_url, video_id, output_mp4):
             print(f"   🔓 Download Attempt {idx+1} (Clients: {clients or 'Deno + Cookies/POT'})...")
             with yt_dlp.YoutubeDL(dl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
-                if os.path.exists(output_mp4) and os.path.getsize(output_mp4) > 10000:
+                if os.path.exists(raw_mp4) and os.path.getsize(raw_mp4) > 10000:
                     return info.get("title", ""), info.get("description", "")
         except Exception as e:
             print(f"   ⚠️ Strategy {idx+1} blocked: {e}")
 
-    # Try external proxy mirrors if GitHub IP is blocked
-    p_title, p_desc = download_via_proxy_mirrors(video_id, output_mp4)
-    if os.path.exists(output_mp4) and os.path.getsize(output_mp4) > 10000:
-        return p_title or "", p_desc or ""
-
-    raise RuntimeError("❌ Download blocked by YouTube IP check. Please add YT_COOKIES to GitHub Secrets (takes 30 seconds)!")
+    raise RuntimeError("❌ Download blocked. Check YT_COOKIES in GitHub Secrets.")
 
 def fetch_latest_youtube_video():
     print(f"🔍 Checking YouTube channel for new uploads: {YOUTUBE_CHANNEL_URL}")
@@ -179,19 +142,21 @@ def fetch_latest_youtube_video():
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     print(f"🆕 NEW YOUTUBE VIDEO DETECTED! ID: {video_id}")
 
-    # Fetch guaranteed Title & Full Description from official XML feed
     xml_title, xml_desc = fetch_metadata_from_xml_feed(channel_id, video_id)
 
-    output_mp4 = "latest_yt_short.mp4"
-    dl_title, dl_desc = download_with_multi_bypass(video_url, video_id, output_mp4)
+    raw_mp4 = "raw_yt_short.mp4"
+    dl_title, dl_desc = download_with_multi_bypass(video_url, video_id, raw_mp4)
+
+    # Convert from YouTube AV1/VP9 to strict Instagram H.264 spec
+    ig_ready_mp4 = normalize_for_instagram_reels(raw_mp4)
 
     final_title = dl_title or xml_title or playlist_title or "New Short #shorts"
     final_desc = dl_desc or xml_desc or final_title
 
-    print(f"✅ Downloaded Successfully: '{final_title}'")
+    print(f"✅ Downloaded & Normalized: '{final_title}'")
     return {
         "id": video_id,
-        "video_path": output_mp4,
+        "video_path": ig_ready_mp4,
         "title": final_title,
         "description": final_desc
     }
@@ -200,31 +165,51 @@ def fetch_latest_youtube_video():
 # 4. STAGE VIDEO & UPLOAD TO INSTAGRAM REELS
 # ==========================================
 def get_temp_public_video_url(video_path):
-    try:
-        with open(video_path, "rb") as f:
-            r = requests.post("https://tmpfiles.org/api/v1/upload", files={"file": f}, timeout=60).json()
-        url = r.get("data", {}).get("url", "")
-        if url:
-            return url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-    except Exception as e:
-        print(f"   ⚠️ tmpfiles fallback ({e})...")
+    """Uploads H.264 MP4 to direct-stream hosts that support Meta Range requests"""
+    headers = {"User-Agent": "Mozilla/5.0"}
 
+    # Host 1: Litterbox (Direct static .mp4 CDN, supports Meta HTTP Range requests)
     try:
         with open(video_path, "rb") as f:
             r = requests.post(
                 "https://litterbox.catbox.moe/resources/internals/api.php",
                 data={"reqtype": "fileupload", "time": "1h"},
-                files={"fileToUpload": f},
+                files={"fileToUpload": ("reel.mp4", f, "video/mp4")},
+                headers=headers,
                 timeout=60
             )
-        if r.status_code == 200 and r.text.startswith("http"):
+        if r.status_code == 200 and r.text.strip().startswith("http"):
             return r.text.strip()
     except Exception as e:
         print(f"   ⚠️ litterbox fallback ({e})...")
 
+    # Host 2: Catbox permanent CDN
+    try:
+        with open(video_path, "rb") as f:
+            r = requests.post(
+                "https://catbox.moe/user/api.php",
+                data={"reqtype": "fileupload"},
+                files={"fileToUpload": ("reel.mp4", f, "video/mp4")},
+                headers=headers,
+                timeout=60
+            )
+        if r.status_code == 200 and r.text.strip().startswith("http"):
+            return r.text.strip()
+    except Exception as e:
+        print(f"   ⚠️ catbox fallback ({e})...")
+
+    # Host 3: uguu.se
+    try:
+        with open(video_path, "rb") as f:
+            r = requests.post("https://uguu.se/upload", files={"files[]": ("reel.mp4", f, "video/mp4")}, timeout=60).json()
+        return r["files"][0]["url"]
+    except Exception as e:
+        print(f"   ⚠️ uguu fallback ({e})...")
+
+    # Host 4: tmpfiles.org
     with open(video_path, "rb") as f:
-        r = requests.post("https://uguu.se/upload", files={"files[]": f}, timeout=60).json()
-    return r["files"][0]["url"]
+        r = requests.post("https://tmpfiles.org/api/v1/upload", files={"file": ("reel.mp4", f, "video/mp4")}, timeout=60).json()
+    return r["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/")
 
 def resolve_ig_account():
     if IG_ACCESS_TOKEN.startswith("IG"):
@@ -253,54 +238,64 @@ def post_to_instagram_reels(video_data):
 
     base_url, target_ig_id, active_token = resolve_ig_account()
 
-    print("   🌐 Generating temporary public link for Meta Graph API...")
+    print("   🌐 Generating public CDN link for Meta Graph API...")
     public_video_url = get_temp_public_video_url(video_data["video_path"])
-    print(f"   ✅ Temporary URL ready: {public_video_url}")
+    print(f"   ✅ Public MP4 URL ready: {public_video_url}")
 
     full_caption = f"{video_data['title']}\n\n{video_data['description']}"[:2180]
 
-    create_url = f"{base_url}/{target_ig_id}/media"
-    payload = {
-        "media_type": "REELS",
-        "video_url": public_video_url,
-        "caption": full_caption,
-        "share_to_feed": "true",
-        "access_token": active_token
-    }
-    res = requests.post(create_url, data=payload, timeout=30).json()
-    if "id" not in res:
-        raise RuntimeError(f"❌ Instagram Container Error: {res}")
+    for retry in range(1, 3):
+        create_url = f"{base_url}/{target_ig_id}/media"
+        payload = {
+            "media_type": "REELS",
+            "video_url": public_video_url,
+            "caption": full_caption,
+            "share_to_feed": "true",
+            "access_token": active_token
+        }
+        res = requests.post(create_url, data=payload, timeout=30).json()
+        if "id" not in res:
+            raise RuntimeError(f"❌ Instagram Container Error: {res}")
 
-    creation_id = res["id"]
-    print(f"   ⏳ Container created (ID: {creation_id}). Waiting for Instagram processing...")
+        creation_id = res["id"]
+        print(f"   ⏳ Container created (ID: {creation_id}, Attempt {retry}). Waiting for Instagram processing...")
 
-    status_url = f"{base_url}/{creation_id}"
-    for attempt in range(1, 15):
-        time.sleep(10)
-        stat_res = requests.get(
-            status_url,
-            params={"fields": "status_code,status", "access_token": active_token},
-            timeout=20
-        ).json()
-        code = stat_res.get("status_code", "")
-        print(f"   🔄 Processing status ({attempt}/14): {code}")
-        if code == "FINISHED":
-            break
-        elif code == "ERROR":
-            raise RuntimeError(f"❌ Instagram Processing Failed: {stat_res}")
+        status_url = f"{base_url}/{creation_id}"
+        failed = False
+        for attempt in range(1, 15):
+            time.sleep(10)
+            stat_res = requests.get(
+                status_url,
+                params={"fields": "status_code,status", "access_token": active_token},
+                timeout=20
+            ).json()
+            code = stat_res.get("status_code", "")
+            print(f"   🔄 Processing status ({attempt}/14): {code}")
+            if code == "FINISHED":
+                break
+            elif code == "ERROR":
+                print(f"   ⚠️ Container processing error: {stat_res}")
+                failed = True
+                break
 
-    pub_url = f"{base_url}/{target_ig_id}/media_publish"
-    pub_res = requests.post(
-        pub_url,
-        data={"creation_id": creation_id, "access_token": active_token},
-        timeout=30
-    ).json()
+        if not failed:
+            pub_url = f"{base_url}/{target_ig_id}/media_publish"
+            pub_res = requests.post(
+                pub_url,
+                data={"creation_id": creation_id, "access_token": active_token},
+                timeout=30
+            ).json()
 
-    if "id" in pub_res:
-        print(f"🎉 SUCCESS! YouTube Video reposted to Instagram Reels! IG Media ID: {pub_res['id']}")
-        return True
-    else:
-        raise RuntimeError(f"❌ Instagram Publish Failed: {pub_res}")
+            if "id" in pub_res:
+                print(f"🎉 SUCCESS! YouTube Video reposted to Instagram Reels! IG Media ID: {pub_res['id']}")
+                return True
+            else:
+                raise RuntimeError(f"❌ Instagram Publish Failed: {pub_res}")
+
+        print("   🔄 Retrying container creation once more...")
+        time.sleep(5)
+
+    raise RuntimeError("❌ Instagram failed to process the video after 2 attempts.")
 
 if __name__ == "__main__":
     video_data = fetch_latest_youtube_video()
