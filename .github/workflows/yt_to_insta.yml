@@ -2,12 +2,11 @@ name: YouTube to Instagram Auto-Reposter
 
 on:
   schedule:
-    # Checks your YouTube channel every 2 hours
     - cron: '15 */2 * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write  # Allows GitHub to save posted_videos.txt after each upload!
+  contents: write
 
 jobs:
   sync-youtube-to-instagram:
@@ -22,10 +21,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🎬 Install FFmpeg & yt-dlp
+      - name: 🛡️ Start YouTube Anti-Bot PO Token Server (Docker)
+        run: |
+          docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+          sleep 3
+
+      - name: 🎬 Install FFmpeg, yt-dlp + PO Token Plugin & pytubefix
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
-          pip install -U yt-dlp requests
+          pip install -U "yt-dlp[default,curl-cffi]" bgutil-ytdlp-pot-provider pytubefix requests
 
       - name: 🚀 Check YouTube & Post to Instagram
         env:
