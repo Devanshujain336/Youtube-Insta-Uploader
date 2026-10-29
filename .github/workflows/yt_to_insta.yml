@@ -21,12 +21,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🛡️ Start YouTube Anti-Bot PO Token Server (Docker)
+      - name: 🦕 Install Deno JS Runtime & PO Token Server
         run: |
+          curl -fsSL https://deno.land/install.sh | sudo env DENO_INSTALL=/usr/local sh -s -- -y
+          deno --version
           docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
           sleep 3
 
-      - name: 🎬 Install FFmpeg, yt-dlp + PO Token Plugin & pytubefix
+      - name: 🎬 Install FFmpeg & yt-dlp
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
           pip install -U "yt-dlp[default,curl-cffi]" bgutil-ytdlp-pot-provider pytubefix requests
@@ -34,6 +36,7 @@ jobs:
       - name: 🚀 Check YouTube & Post to Instagram
         env:
           YOUTUBE_CHANNEL_URL: "https://www.youtube.com/@billionairemonkk/shorts"
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
         run: python yt_to_insta.py
