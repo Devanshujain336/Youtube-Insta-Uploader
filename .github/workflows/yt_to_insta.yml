@@ -2,7 +2,7 @@ name: YouTube to Instagram Auto-Reposter
 
 on:
   schedule:
-    - cron: '15 */2 * * *'
+  - cron: '15 */12 * * *'
   workflow_dispatch:
 
 permissions:
