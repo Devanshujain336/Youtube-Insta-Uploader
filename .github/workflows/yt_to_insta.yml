@@ -16,12 +16,6 @@ jobs:
       - name: 📥 Checkout Repo
         uses: actions/checkout@v4
 
-      - name: 🛡️ Start Free YouTube PO-Token Bypass Server
-        run: |
-          docker rm -f bgutil-provider || true
-          docker run --name bgutil-provider -d -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
-          pip install -U yt-dlp bgutil-ytdlp-pot-provider requests
-
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
@@ -31,7 +25,9 @@ jobs:
         run: |
           curl -fsSL https://deno.land/install.sh | sudo env DENO_INSTALL=/usr/local sh -s -- -y
           deno --version
+          docker rm -f bgutil-provider || true
           docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+          pip install -U yt-dlp bgutil-ytdlp-pot-provider requests
           sleep 3
 
       - name: 🎬 Install FFmpeg & yt-dlp
