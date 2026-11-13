@@ -21,6 +21,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: 🛡️ Start Free YouTube PO-Token Bypass Server
+        run: |
+          docker run --name bgutil-provider -d -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
+          pip install -U yt-dlp bgutil-ytdlp-pot-provider requests
+
       - name: 🦕 Install Deno JS Runtime & PO Token Server
         run: |
           curl -fsSL https://deno.land/install.sh | sudo env DENO_INSTALL=/usr/local sh -s -- -y
