@@ -16,15 +16,15 @@ jobs:
       - name: 📥 Checkout Repo
         uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: 🛡️ Start Free YouTube PO-Token Bypass Server
         run: |
           docker run --name bgutil-provider -d -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider
           pip install -U yt-dlp bgutil-ytdlp-pot-provider requests
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: 🦕 Install Deno JS Runtime & PO Token Server
         run: |
