@@ -79,40 +79,81 @@ def normalize_for_instagram_reels(raw_mp4, ig_ready_mp4="ig_ready_reel.mp4"):
     print(f"   ✅ Instagram-compliant H.264 MP4 ready ({os.path.getsize(ig_ready_mp4) // 1024} KB)")
     return ig_ready_mp4
 
-def download_with_multi_bypass(video_url, video_id, raw_mp4):
-    client_strategies = [
-        None,  # Uses Deno + PO-Token + Cookies
-        ["tv", "web_safari"],
-        ["mweb", "web_embedded"],
+def download_with_multi_bypass(video_url, video_id, output_path):
+    print(f"📥 Downloading YouTube Short: {video_id}...")
+    
+    # 1. Fetch Title cleanly via YouTube oEmbed API (Never blocked by bot checks!)
+    title, desc = f"YouTube Short {video_id}", "#shorts"
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        oembed = requests.get(oembed_url, timeout=10).json()
+        title = oembed.get("title", title)
+    except Exception:
+        pass
+
+    cookie_file = "cookies.txt" if os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 100 else None
+
+    # Strategies 1-3 are 100% COOKIE-FREE (so expired cookies never poison them!)
+    strategies = [
+        {"name": "1. Cookie-Free PO-Token + MWeb/TV", "use_cookies": False, "clients": ["mweb", "tv"]},
+        {"name": "2. Cookie-Free iOS / Android VR Bypass", "use_cookies": False, "clients": ["ios", "android_vr"]},
+        {"name": "3. Cookie-Free Web Embedded / Creator", "use_cookies": False, "clients": ["web_embedded", "web_creator"]},
+        {"name": "4. Authenticated Cookies Fallback", "use_cookies": True, "clients": ["web", "tv"]},
     ]
 
-    for idx, clients in enumerate(client_strategies):
-        if os.path.exists(raw_mp4):
-            os.remove(raw_mp4)
-
-        dl_opts = {
-            # Prefer H.264 (avc1) directly instead of AV1 (format 399)
-            "format": "bestvideo[vcodec^=avc1][height<=1920]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1920]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+    for strat in strategies:
+        if strat["use_cookies"] and not cookie_file:
+            continue
+        print(f"   🔓 Trying {strat['name']}...")
+        ydl_opts = {
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "outtmpl": output_path,
             "merge_output_format": "mp4",
-            "outtmpl": raw_mp4,
             "quiet": False,
             "nocheckcertificate": True,
+            "extractor_args": {"youtube": {"player_client": strat["clients"]}},
         }
-        if os.path.exists(COOKIES_FILE):
-            dl_opts["cookiefile"] = COOKIES_FILE
-        if clients:
-            dl_opts["extractor_args"] = {"youtube": {"player_client": clients}}
+        if strat["use_cookies"] and cookie_file:
+            ydl_opts["cookiefile"] = cookie_file
 
         try:
-            print(f"   🔓 Download Attempt {idx+1} (Clients: {clients or 'Deno + Cookies/POT'})...")
-            with yt_dlp.YoutubeDL(dl_opts) as ydl:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
-                if os.path.exists(raw_mp4) and os.path.getsize(raw_mp4) > 10000:
-                    return info.get("title", ""), info.get("description", "")
+                if info:
+                    title = info.get("title") or title
+                    desc = info.get("description") or desc
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 50000:
+                print(f"   ✅ Downloaded successfully via {strat['name']}!")
+                return title, desc
         except Exception as e:
-            print(f"   ⚠️ Strategy {idx+1} blocked: {e}")
+            print(f"   ⚠️ {strat['name']} failed: {e}")
 
-    raise RuntimeError("❌ Download blocked. Check YT_COOKIES in GitHub Secrets.")
+    # Strategy 5: External Proxy API Fallback (Bypasses GitHub IP blocks completely)
+    print("   🌐 Trying Strategy 5: External Stream Proxy APIs...")
+    proxy_apis = [
+        f"https://inv.tux.pizza/api/v1/videos/{video_id}",
+        f"https://invidious.nerdvpn.de/api/v1/videos/{video_id}",
+        f"https://invidious.privacyredirect.com/api/v1/videos/{video_id}"
+    ]
+    for api_url in proxy_apis:
+        try:
+            r = requests.get(api_url, timeout=15).json()
+            title = r.get("title") or title
+            desc = r.get("description") or desc
+            for fmt in r.get("formatStreams", []):
+                if "mp4" in fmt.get("container", "") and fmt.get("url"):
+                    vid_bytes = requests.get(fmt["url"], timeout=30).content
+                    if len(vid_bytes) > 50000:
+                        with open(output_path, "wb") as f:
+                            f.write(vid_bytes)
+                        print("   ✅ Downloaded via External Stream Proxy!")
+                        return title, desc
+        except Exception:
+            continue
+
+    raise RuntimeError("❌ All 5 download strategies were blocked.")
 
 def fetch_latest_youtube_video():
     print(f"🔍 Checking YouTube channel for new uploads: {YOUTUBE_CHANNEL_URL}")
