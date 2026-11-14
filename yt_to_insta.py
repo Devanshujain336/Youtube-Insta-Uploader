@@ -90,7 +90,7 @@ def is_warp_running():
 def download_with_multi_bypass(video_url, video_id, output_path):
     print(f"📥 Downloading YouTube Short: {video_id}...")
     
-    # 1. Fetch Title cleanly via YouTube oEmbed API (Never blocked by bot checks!)
+    # 1. Get Title cleanly via YouTube oEmbed API
     title, desc = f"YouTube Short {video_id}", "#shorts"
     try:
         oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
@@ -99,36 +99,20 @@ def download_with_multi_bypass(video_url, video_id, output_path):
     except Exception:
         pass
 
-    warp_active = is_warp_running()
-    print(f"   🛡️ Cloudflare WARP Tunnel Active: {warp_active}")
-    active_proxy = WARP_PROXY if warp_active else None
-    cookie_file = COOKIES_FILE if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 100 else None
+    # Ensure cookies.txt is written cleanly from YT_COOKIES env if not already on disk
+    raw_cookies = os.environ.get("YT_COOKIES", "").strip()
+    if raw_cookies and not os.path.exists("cookies.txt"):
+        with open("cookies.txt", "w", encoding="utf-8") as cf:
+            cf.write(raw_cookies + "\n")
+
+    cookie_file = "cookies.txt" if os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 100 else None
 
     strategies = [
-        {
-            "name": "1. Cloudflare WARP + PO-Token (MWeb/TV/Web)",
-            "proxy": active_proxy,
-            "use_cookies": False,
-            "clients": ["mweb", "tv", "web"]
-        },
-        {
-            "name": "2. Cloudflare WARP + Mobile VR/iOS Bypass",
-            "proxy": active_proxy,
-            "use_cookies": False,
-            "clients": ["android_vr", "ios", "web_embedded"]
-        },
-        {
-            "name": "3. Cloudflare WARP + Authenticated Cookies",
-            "proxy": active_proxy,
-            "use_cookies": True,
-            "clients": ["web", "mweb", "tv"]
-        },
-        {
-            "name": "4. Direct PO-Token Fallback",
-            "proxy": None,
-            "use_cookies": False,
-            "clients": ["mweb", "android_vr", "ios"]
-        },
+        # Fast cookie-free attempt first (no mweb, so no PO-Token hang!)
+        {"name": "1. Fast Cookie-Free Bypass (android_vr / tv_embedded)", "use_cookies": False, "clients": ["android_vr", "tv_embedded"]},
+        # Authenticated Cookie attempts using your fresh YT_COOKIES!
+        {"name": "2. Authenticated YT_COOKIES (tv / web)", "use_cookies": True, "clients": ["tv", "web"]},
+        {"name": "3. Authenticated YT_COOKIES (web_creator / web_safari)", "use_cookies": True, "clients": ["web_creator", "web_safari"]},
     ]
 
     for strat in strategies:
@@ -141,13 +125,8 @@ def download_with_multi_bypass(video_url, video_id, output_path):
             "merge_output_format": "mp4",
             "quiet": False,
             "nocheckcertificate": True,
-            "extractor_args": {
-                "youtube": {"player_client": strat["clients"]},
-                "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]},
-            },
+            "extractor_args": {"youtube": {"player_client": strat["clients"]}},
         }
-        if strat["proxy"]:
-            ydl_opts["proxy"] = strat["proxy"]
         if strat["use_cookies"] and cookie_file:
             ydl_opts["cookiefile"] = cookie_file
 
@@ -165,29 +144,31 @@ def download_with_multi_bypass(video_url, video_id, output_path):
         except Exception as e:
             print(f"   ⚠️ {strat['name']} failed: {e}")
 
-    # Strategy 5: pytubefix over Cloudflare WARP
-    print("   🔓 Trying 5. pytubefix (ANDROID_VR / WEB) over WARP...")
-    try:
-        from pytubefix import YouTube
-        proxies = {"http": active_proxy, "https": active_proxy} if active_proxy else None
-        for client_name in ["ANDROID_VR", "IOS", "MWEB", "WEB"]:
-            try:
-                yt = YouTube(video_url, client=client_name, proxies=proxies)
-                stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc().first()
-                if not stream:
-                    stream = yt.streams.filter(file_extension="mp4").first()
-                if stream:
-                    stream.download(filename=output_path)
-                    if os.path.exists(output_path) and os.path.getsize(output_path) > 50000:
-                        print(f"   ✅ Downloaded via pytubefix ({client_name})!")
-                        return yt.title or title, yt.description or desc
-            except Exception as e:
-                print(f"   ⚠️ pytubefix ({client_name}) note: {e}")
-    except Exception as e:
-        print(f"   ⚠️ pytubefix fallback error: {e}")
+    # Final Fallback: External Stream Proxy APIs
+    print("   🌐 Trying Strategy 4: External Stream Proxy APIs...")
+    proxy_apis = [
+        f"https://inv.tux.pizza/api/v1/videos/{video_id}",
+        f"https://invidious.nerdvpn.de/api/v1/videos/{video_id}",
+        f"https://invidious.privacyredirect.com/api/v1/videos/{video_id}"
+    ]
+    for api_url in proxy_apis:
+        try:
+            r = requests.get(api_url, timeout=15).json()
+            title = r.get("title") or title
+            desc = r.get("description") or desc
+            for fmt in r.get("formatStreams", []):
+                if "mp4" in fmt.get("container", "") and fmt.get("url"):
+                    vid_bytes = requests.get(fmt["url"], timeout=30).content
+                    if len(vid_bytes) > 50000:
+                        with open(output_path, "wb") as f:
+                            f.write(vid_bytes)
+                        print("   ✅ Downloaded via External Stream Proxy!")
+                        return title, desc
+        except Exception:
+            continue
 
-    raise RuntimeError("❌ All 5 download strategies failed.")
-
+    raise RuntimeError("❌ All download strategies failed.")
+    
 def fetch_latest_youtube_video():
     print(f"🔍 Checking YouTube channel for new uploads: {YOUTUBE_CHANNEL_URL}")
     posted_ids = get_posted_history()
