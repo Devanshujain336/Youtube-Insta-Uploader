@@ -28,10 +28,10 @@ jobs:
           # 1. Install Deno JS Runtime
           curl -fsSL https://deno.land/install.sh | sudo env DENO_INSTALL=/usr/local sh -s -- -y
           deno --version
+
           
-          # 2. Start bgutil PO-Token Docker Server on 127.0.0.1:4416
-          docker rm -f bgutil-provider || true
-          docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+          
+
           
           # 3. Start Free Cloudflare WARP SOCKS5 Proxy on 127.0.0.1:1080 (Bypasses GitHub IP block)
           sudo curl -fsSL https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 -o /usr/local/bin/wgcf
@@ -56,6 +56,12 @@ jobs:
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
         run: python yt_to_insta.py
+
+      - name: 📦 Install Python Dependencies (Without broken bgutil plugin)
+        run: |
+          docker rm -f bgutil-provider || true
+          pip uninstall -y bgutil-ytdlp-pot-provider || true
+          pip install -U yt-dlp requests
 
       - name: 💾 Save Posted Video ID to Memory (posted_videos.txt)
         run: |
