@@ -2,7 +2,7 @@ name: YouTube to Instagram Auto-Reposter
 
 on:
   schedule:
-  - cron: '15 */12 * * *'
+    - cron: '15 */12 * * *'
   workflow_dispatch:
 
 permissions:
@@ -21,19 +21,33 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🦕 Install Deno JS Runtime & PO Token Server
-        run: |
-          curl -fsSL https://deno.land/install.sh | sudo env DENO_INSTALL=/usr/local sh -s -- -y
-          deno --version
-          docker rm -f bgutil-provider || true
-          docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
-          pip install -U yt-dlp bgutil-ytdlp-pot-provider requests
-          sleep 3
-
-      - name: 🎬 Install FFmpeg & yt-dlp
+      - name: 🛡️ Install Deno, PO-Token Server, Cloudflare WARP Proxy & FFmpeg
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg
-          pip install -U "yt-dlp[default,curl-cffi]" bgutil-ytdlp-pot-provider pytubefix requests
+          
+          # 1. Install Deno JS Runtime
+          curl -fsSL https://deno.land/install.sh | sudo env DENO_INSTALL=/usr/local sh -s -- -y
+          deno --version
+          
+          # 2. Start bgutil PO-Token Docker Server on 127.0.0.1:4416
+          docker rm -f bgutil-provider || true
+          docker run --name bgutil-provider -d --init -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+          
+          # 3. Start Free Cloudflare WARP SOCKS5 Proxy on 127.0.0.1:1080 (Bypasses GitHub IP block)
+          sudo curl -fsSL https://github.com/ViRb3/wgcf/releases/download/v2.2.22/wgcf_2.2.22_linux_amd64 -o /usr/local/bin/wgcf
+          sudo chmod +x /usr/local/bin/wgcf
+          rm -f wgcf-account.toml wgcf-profile.conf
+          wgcf register --accept-tos
+          wgcf generate
+          curl -fsSL https://github.com/pufferffish/wireproxy/releases/download/v1.0.9/wireproxy_linux_amd64.tar.gz | sudo tar -xz -C /usr/local/bin/
+          sudo chmod +x /usr/local/bin/wireproxy
+          printf "\n[Socks5]\nBindAddress = 127.0.0.1:1080\n" >> wgcf-profile.conf
+          nohup wireproxy -c wgcf-profile.conf >/dev/null 2>&1 &
+          sleep 4
+          curl -s -x socks5h://127.0.0.1:1080 https://www.cloudflare.com/cdn-cgi/trace | grep warp= || true
+          
+          # 4. Install Python Packages + SOCKS Proxy Support
+          pip install -U --pre "yt-dlp[default,curl-cffi]" bgutil-ytdlp-pot-provider pytubefix requests PySocks
 
       - name: 🚀 Check YouTube & Post to Instagram
         env:
